@@ -2,7 +2,7 @@
 
 A QGIS Processing script that builds Z/M-enabled line and point geometries from a line layer plus a set of measurement points along those lines.
 
-[screenshot](docs/screenshot.png)
+[screenshot](screenshot.png)
 
 ## What it does
 
