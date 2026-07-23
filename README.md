@@ -2,7 +2,7 @@
 
 A QGIS Processing script that builds Z/M-enabled line and point geometries from a line layer plus a set of measurement points along those lines.
 
-![screenshot](images/screenshot.png)
+<img src="images/screenshot.png" width="400" alt="Segmented line with interpolated values as a result of this tool">
 
 ## What it does
 
