@@ -19,7 +19,7 @@ Lines with fewer than 2 matching measurement points are skipped (with a warning 
 
 This is a single-file **Processing script**, not a full plugin:
 
-1. Download [`interpolate_points_on_lines.py`](./interpolate_points_on_lines.py).
+1. Download [`interpolate_points_on_lines.py`](./Interpolate Points on Lines.py).
 2. In QGIS: **Processing → Toolbox → Scripts (gear icon) → Add Script to Toolbox…**, and select the file.
 3. It will appear under **Vector Analysis → Interpolate Points on Lines**.
 
