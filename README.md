@@ -13,7 +13,7 @@ Given a line layer and a set of measurement points that lie along those lines, t
 - Optionally generates points at a regular interval along each line, reusing an existing measurement point instead of creating a redundant one nearby.
 - Optionally segments each line into individual features between consecutive points, carrying that segment's station/measure/point type as attributes.
 
-Lines with fewer than 2 matching measurement points are skipped (with a warning explaining why).
+Lines with no matching measurement points are skipped (with a warning explaining why). A line with exactly one measurement point gets that single value applied uniformly along its whole length.
 
 ## Installation
 
