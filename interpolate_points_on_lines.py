@@ -6,7 +6,7 @@
 *   the Free Software Foundation; either version 2 of the License, or     *
 *   (at your option) any later version.                                   *
 *   Created by: Stephan "preinzi" Preinstorfer (LiberGIS)                 *
-*   Last update: 23.07.2026                                               *
+*   Last update: 27.07.2026                                               *
 *   SPDX-License-Identifier: GPL-2.0-or-later                             *
 *                                                                         *
 ***************************************************************************
@@ -123,8 +123,7 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
         """
         Returns a url pointing to a resource describing the algorithm.
         """
-        # TODO: replace with your actual GitHub repo URL once published
-        return 'https://github.com/preinzi/REPLACE-WITH-YOUR-REPO-NAME#readme'
+        return 'https://github.com/preinzi/qgis-interpolate-points-on-lines/blob/main/README.md'
 
     def shortHelpString(self):
         """
@@ -145,8 +144,9 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
             'are segmented at the location of the previously generated points in '
             'order to create individual line geometries, which inherit the attributes '
             'of the points.\n\n'
-            'If less than 2 input points are found for a line, this line will be '
-            'skipped.\n\n'
+            'If no input points are found for a line, this line will be skipped. If '
+            'exactly one point is found, that single value is applied to the whole '
+            'line, as if it had been interpolated from just one measurement.\n\n'
             'Inputs:\n'
             '- Line layer: Line features with unique IDs\n'
             '- Measurement points: Point features with line ID and numeric values\n'
@@ -457,15 +457,17 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
 
             lines_matched += 1
 
-            if len(points_by_line[line_id_key]) < 2:
-                feedback.pushWarning(
+            # A single measurement point is accepted: its value is
+            # applied uniformly along the whole line (see interpolated_z()
+            # below, which naturally degenerates to a flat value when there
+            # is only one measurement station to bisect against).
+            if len(points_by_line[line_id_key]) == 1:
+                feedback.pushInfo(
                     self.tr(
-                        "Line '{}': Less than 2 measurement points found. "
-                        "Minimum 2 points required. Skipping line."
+                        "Line '{}': Only one measurement point found; its "
+                        "value will be applied uniformly along the whole line."
                     ).format(line_id)
                 )
-                feedback.setProgress(int((current + 1) * step_size))
-                continue
 
             line_geom = line_feature.geometry()
 
@@ -547,10 +549,10 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
                     }
                 )
 
-            if len(measurement_vertices) < 2:
+            if len(measurement_vertices) < 1:
                 feedback.pushWarning(
                     self.tr(
-                        "Line '{}': Less than 2 valid measurement points "
+                        "Line '{}': No valid measurement points remained "
                         "after projecting onto the line. Skipping line."
                     ).format(line_id)
                 )
@@ -579,6 +581,20 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
             # vertices that came from the line's own geometry. Vertices
             # before the first / after the last measurement point take that
             # point's value (flat extrapolation).
+            #
+            # Note on edge cases:
+            # - With only one measurement station, bisect_left against a
+            #   single-element list always resolves to either idx<=0 or
+            #   idx>=len(...), so every vertex falls into the flat
+            #   extrapolation branches and returns that one value - i.e.
+            #   the whole line is treated as "interpolated" from a single
+            #   point, which is exactly a constant.
+            # - When two neighbouring measurement values are equal
+            #   (v0 == v1), t * (v1 - v0) is t * 0 regardless of t, so the
+            #   result simplifies to v0 for every station in between. No
+            #   division-by-zero risk is introduced by equal *values* -
+            #   the only division guard needed is for equal *stations*
+            #   (s1 == s0), which is already handled below.
             measurement_stations = [v["station"] for v in merged_vertices if v["is_measurement"]]
             measurement_values = [v["z_value"] for v in merged_vertices if v["is_measurement"]]
 
