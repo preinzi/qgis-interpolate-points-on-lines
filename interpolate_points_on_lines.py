@@ -6,7 +6,7 @@
 *   the Free Software Foundation; either version 2 of the License, or     *
 *   (at your option) any later version.                                   *
 *   Created by: Stephan "preinzi" Preinstorfer (LiberGIS)                 *
-*   Last update: 27.07.2026                                               *
+*   Last update: 14.09.2026                                               *
 *   SPDX-License-Identifier: GPL-2.0-or-later                             *
 *                                                                         *
 ***************************************************************************
@@ -15,8 +15,10 @@
 import bisect
 import math
 
-from qgis.PyQt.QtCore import QCoreApplication, QVariant
-from qgis.core import (QgsProcessing,
+from qgis.PyQt.QtCore import QCoreApplication, QMetaType, QVariant
+from qgis.core import (NULL,
+                       QgsCoordinateTransform,
+                       QgsProcessing,
                        QgsProcessingException,
                        QgsProcessingAlgorithm,
                        QgsProcessingParameterFeatureSource,
@@ -43,6 +45,21 @@ def _numeric_key(value):
         return float(value)
     except (TypeError, ValueError):
         return value
+
+
+def _make_field(name, metatype_name, variant_name):
+    """
+    Constructs a QgsField using QMetaType.Type - the constructor argument
+    QGIS >= 3.38 expects, and the form Qt6 / QGIS 4.0 is expected to keep
+    long-term. QGIS versions before 3.38 (still in active use, e.g.
+    3.34.x) only have the older QVariant.Type-based constructor and raise
+    a TypeError for a QMetaType.Type argument, so fall back to that
+    instead of relying on a QGIS version check.
+    """
+    try:
+        return QgsField(name, getattr(QMetaType.Type, metatype_name))
+    except TypeError:
+        return QgsField(name, getattr(QVariant, variant_name))
 
 
 class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
@@ -99,7 +116,7 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
         """
         Returns the algorithm name, used for identifying the algorithm.
         """
-        return 'interpolate_Z_M_geometries'
+        return 'interpolatepointsonlines'
 
     def displayName(self):
         """
@@ -111,13 +128,23 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
         """
         Returns the name of the group this algorithm belongs to.
         """
-        return self.tr('Vector Analysis')
+        return self.tr('LiberGIS')
 
     def groupId(self):
         """
         Returns the unique ID of the group this algorithm belongs to.
         """
-        return 'vector_analysis'
+        return 'libergis'
+
+    def tags(self):
+        """
+        Returns a list of tags relating to the algorithm, used to improve
+        searchability in the Processing Toolbox.
+        """
+        return self.tr(
+            'interpolate,points,line,lines,station,chainage,profile,z,m,zm,'
+            'pipeline,road,river,measurement,survey,vertex,vertices'
+        ).split(',')
 
     def helpUrl(self):
         """
@@ -353,6 +380,25 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
             self.tr('Processing CRS: {}').format(line_layer.sourceCrs().authid())
         )
 
+        # If the measurement points layer isn't in the same CRS as the line
+        # layer, all the geometry math below (lineLocatePoint, distance,
+        # interpolate) would silently operate on mismatched coordinates.
+        # Build a transform up front and reproject each point on the fly
+        # instead of assuming both inputs already share a CRS.
+        point_transform = None
+        if points_layer.sourceCrs() != line_layer.sourceCrs():
+            point_transform = QgsCoordinateTransform(
+                points_layer.sourceCrs(),
+                line_layer.sourceCrs(),
+                context.transformContext()
+            )
+            feedback.pushInfo(
+                self.tr(
+                    'Measurement points layer CRS ({}) differs from the line '
+                    'layer CRS ({}); points will be reprojected on the fly.'
+                ).format(points_layer.sourceCrs().authid(), line_layer.sourceCrs().authid())
+            )
+
         # Create fields object from the input line layer (for the line output)
         fields = line_layer.fields()
 
@@ -379,9 +425,9 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
 
         point_fields = QgsFields()
         point_fields.append(QgsField(line_id_field, line_id_field_type))
-        point_fields.append(QgsField('station', QVariant.Double))
-        point_fields.append(QgsField('measure', QVariant.Double))
-        point_fields.append(QgsField('point_type', QVariant.String))
+        point_fields.append(_make_field('station', 'Double', 'Double'))
+        point_fields.append(_make_field('measure', 'Double', 'Double'))
+        point_fields.append(_make_field('point_type', 'QString', 'String'))
 
         # Create output sink for the line segments. Uses the same field
         # schema as the points, since each segment carries the attributes
@@ -414,16 +460,43 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
         # underlying numeric ID.
         points_by_line = {}
         for point_feature in points_layer.getFeatures():
+            # A NULL Z-value would otherwise reach the linear interpolation
+            # arithmetic further down and abort the whole run with an
+            # unhandled exception. Skip it here with a clear warning instead.
+            z_value = point_feature[z_value_field]
+            if z_value == NULL:
+                feedback.pushWarning(
+                    self.tr(
+                        "Measurement point with {} = '{}' has no value in "
+                        "the Z-value field; skipping it."
+                    ).format(point_id_field, point_feature[point_id_field])
+                )
+                continue
+
             line_id_key = _numeric_key(point_feature[point_id_field])
             if line_id_key not in points_by_line:
                 points_by_line[line_id_key] = []
 
-            point_geom = point_feature.geometry().asPoint()
+            point_geom = point_feature.geometry()
+            if point_transform is not None:
+                try:
+                    point_geom.transform(point_transform)
+                except Exception as exc:
+                    feedback.pushWarning(
+                        self.tr(
+                            "Could not reproject measurement point with {} "
+                            "= '{}' into the line layer's CRS; skipping it. "
+                            "({})"
+                        ).format(point_id_field, point_feature[point_id_field], exc)
+                    )
+                    continue
+
+            point_xy = point_geom.asPoint()
             points_by_line[line_id_key].append(
                 {
-                    "x": point_geom.x(),
-                    "y": point_geom.y(),
-                    "z_value": point_feature[z_value_field],
+                    "x": point_xy.x(),
+                    "y": point_xy.y(),
+                    "z_value": z_value,
                 }
             )
 
@@ -434,6 +507,15 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
         # Track how many lines actually found a matching set of measurement
         # points, so we can warn about a systematic ID mismatch afterwards.
         lines_matched = 0
+
+        # addFeature() can return False on a failed write (e.g. a
+        # provider-level error) without raising an exception - it fails
+        # silently unless the return value is checked. Count failures here
+        # instead of warning per-feature, to avoid flooding the log, and
+        # report a single summary at the end.
+        line_write_failures = 0
+        point_write_failures = 0
+        segment_write_failures = 0
 
         # Process each line
         for current, line_feature in enumerate(line_layer.getFeatures()):
@@ -470,6 +552,13 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
                 )
 
             line_geom = line_feature.geometry()
+
+            if line_geom is None or line_geom.isNull() or line_geom.isEmpty():
+                feedback.pushWarning(
+                    self.tr("Line '{}': Empty or missing geometry. Skipping line.").format(line_id)
+                )
+                feedback.setProgress(int((current + 1) * step_size))
+                continue
 
             # Convert multipart to single part if needed
             if line_geom.isMultipart():
@@ -630,7 +719,8 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
                 feature = QgsFeature(fields)
                 feature.setGeometry(line_zm)
                 feature[line_id_field] = line_id
-                sink.addFeature(feature, QgsFeatureSink.FastInsert)
+                if not sink.addFeature(feature, QgsFeatureSink.FastInsert):
+                    line_write_failures += 1
 
             # Generate points at a regular interval along the line, used
             # for both the point output and the line segment output (if
@@ -708,7 +798,8 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
                         point_feature['station'] = p["station"]
                         point_feature['measure'] = p["z_value"]
                         point_feature['point_type'] = p["point_type"]
-                        point_sink.addFeature(point_feature, QgsFeatureSink.FastInsert)
+                        if not point_sink.addFeature(point_feature, QgsFeatureSink.FastInsert):
+                            point_write_failures += 1
 
                 # Build one individual line feature per segment between
                 # two consecutive output points, carrying the attributes of
@@ -728,7 +819,8 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
                         segment_feature['station'] = p_start["station"]
                         segment_feature['measure'] = p_start["z_value"]
                         segment_feature['point_type'] = p_start["point_type"]
-                        segment_sink.addFeature(segment_feature, QgsFeatureSink.FastInsert)
+                        if not segment_sink.addFeature(segment_feature, QgsFeatureSink.FastInsert):
+                            segment_write_failures += 1
 
             # Update the progress bar
             feedback.setProgress(int((current + 1) * step_size))
@@ -746,6 +838,19 @@ class CreateMValueLinesAlgorithm(QgsProcessingAlgorithm):
                     'not actually refer to the same IDs - double-check both '
                     'fields and their values.'
                 )
+            )
+
+        # Report any silently-failed writes (addFeature() returns False on
+        # failure instead of raising) as a single summary rather than
+        # per-feature, so a systematic provider issue is surfaced clearly
+        # without flooding the log.
+        if line_write_failures or point_write_failures or segment_write_failures:
+            feedback.reportError(
+                self.tr(
+                    'Some features could not be written to the output '
+                    'sink(s): {} line(s), {} point(s), {} segment(s) failed.'
+                ).format(line_write_failures, point_write_failures, segment_write_failures),
+                fatalError=False
             )
 
         # Send completion message
