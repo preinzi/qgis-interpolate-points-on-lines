@@ -13,7 +13,11 @@ Given a line layer and a set of measurement points that lie along those lines, t
 - Optionally generates points at a regular interval along each line, reusing an existing measurement point instead of creating a redundant one nearby.
 - Optionally segments each line into individual features between consecutive points, carrying that segment's station/measure/point type as attributes.
 
-Lines with no matching measurement points are skipped (with a warning explaining why). A line with exactly one measurement point gets that single value applied uniformly along its whole length.
+Lines with no matching measurement points are skipped; the log lists them once, together with an expression that selects them in the line layer. A line with exactly one measurement point gets that single value applied uniformly along its whole length. The start and end of each line are always part of the output, so the segments cover the whole line.
+
+### Coordinate reference system
+
+Stations (M values), tolerance and interval are planar distances in the line layer's map units, so the line layer must use a **projected CRS** (e.g. MGI / Austria GK, ETRS89 / UTM). Geographic CRS (degrees, e.g. EPSG:4326) are rejected. At the end of a run the log reports how far the planar stations deviate from the true ground distance on the ellipsoid; above 1 % (e.g. in Web Mercator, EPSG:3857) this is a warning. A measurement points layer in a different CRS is reprojected on the fly.
 
 ## Installation
 
@@ -21,9 +25,9 @@ This is a single-file **Processing script**, not a full plugin:
 
 1. Download [`interpolate_points_on_lines.py`](./interpolate_points_on_lines.py).
 2. In QGIS: **Processing → Toolbox → Scripts (gear icon) → Add Script to Toolbox…**, and select the file.
-3. It will appear under **Vector Analysis → Interpolate Points on Lines**.
+3. It will appear under **LiberGIS → Interpolate Points on Lines**.
 
-Tested on QGIS 3.34.4-Prizren. No extra Python packages required beyond what ships with QGIS.
+Tested on QGIS 3.34.4-Prizren and QGIS 4.2.3-Belém do Pará. No extra Python packages required beyond what ships with QGIS.
 
 ## Usage
 
@@ -42,8 +46,10 @@ Tested on QGIS 3.34.4-Prizren. No extra Python packages required beyond what shi
 | Output | Default | Description |
 |---|---|---|
 | **Output line segments** | on | One line feature per segment between two consecutive points, carrying `station` / `measure` / `point_type` attributes |
-| **Output simple lines** | off | `LineStringZM` layer with the original line shape plus the measurement points |
+| **Output simple lines** | off | `LineStringZM` layer with the original line shape plus the measurement points, keeping all attributes of the input lines |
 | **Output points** | off | Points every *interval* map units along each line (existing measurement points are reused where close enough), with Z/M in the geometry plus `station` / `measure` / `point_type` attributes |
+
+In the point and segment outputs, the Line ID field keeps its name, except when it is called `fid`, `station`, `measure` or `point_type`: then it is named `line_<name>` (e.g. `line_fid`). A field named `fid` is the primary key of a GeoPackage, and repeated values there would make most writes fail.
 
 ## License
 
